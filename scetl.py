@@ -8,18 +8,6 @@ from sqlalchemy import create_engine, MetaData, Table, Column, Integer, DateTime
 
 # Scetl stands for Sokols' Costyl ETL
 
-with open('configs/configs.json') as json_file:
-    configs = json.load(json_file)
-
-# engine = create_engine('mssql+pymssql://scetl:SemperInvicta90@localhost:1433/uchr')#
-db_engine = create_engine(f'sqlite:///{os.getcwd()}/db.sqlite')
-logging.basicConfig(level=logging.INFO)
-'''
-df = pd.DataFrame([{'id': 1, 'name': 'ramis'}, {'id': 2, 'name': 'babis'}])
-df.to_sql('test', con=engine, if_exists='replace', index=False)
-config = configs['eduson']
-'''
-
 sql_data_types = {'INT': Integer, 'VARCHAR': String, 'NUMERIC': Float, 'DATETIME': DateTime, }
 pd_data_types = {'INT': 'int', 'VARCHAR': 'object', 'NUMERIC': 'float', 'DATETIME': 'datetime'}
 
@@ -133,6 +121,66 @@ class EdusonScetl:
         self.update_users()
         self.update_user_changes()
 
+# ------------
+# --Coursera--
+# ------------
 
-eduson_scetl = EdusonScetl(configs['eduson'], db_engine)
-eduson_scetl.update_coursera()
+
+with open('configs/configs.json') as json_file:
+    configs = json.load(json_file)
+
+# engine = create_engine('mssql+pymssql://scetl:SemperInvicta90@localhost:1433/uchr')#
+db_engine = create_engine(f'sqlite:///{os.getcwd()}/db.sqlite')
+logging.basicConfig(level=logging.INFO)
+
+config = configs['coursera']
+
+
+class CourseraScetl:
+    access_token = None
+    access_token_updated_at = None
+
+    def __init__(self, config, engine):
+        self.urls = config['urls']
+        self.config = config
+        self.engine = engine
+
+    def check_token_freshness(self):
+        if os.path.exists('configs/coursera_token.json'):
+            with open('configs/coursera_token.json') as token_json:
+                access_token_dict = json.load(token_json)
+            logging.info(f'Token dict: {access_token_dict}')
+            token_last_update_time = datetime.strptime(access_token_dict['date_updated'], '%Y-%m-%d %H:%M')
+            token_lifetime = (datetime.utcnow() - token_last_update_time).total_seconds()
+            logging.info(f'Access token is {token_lifetime} seconds old')
+            if token_lifetime < 1200:  # token has lifetime of 1800 sec and update has 900-1200 sec cool down
+                self.access_token = access_token_dict['access_token']
+                self.access_token_updated_at = access_token_dict['date_updated']
+                logging.info('Access is fresh')
+                return True
+        logging.info('Access token needs to be updated')
+        return False
+
+    def get_access_token(self):
+        url = self.urls['get_access_token']['url']
+        body = self.urls['get_access_token']['body_params']
+        response = requests.post(url, data=body).json()
+
+        new_token_dict = {
+            'access_token': response['access_token'],
+            'date_updated': datetime.strftime(datetime.utcnow(), '%Y-%m-%d %H:%M')
+        }
+        logging.info(f'got response {new_token_dict}')
+
+        with open('configs/coursera_token.json', 'w') as file:
+            file.write(json.dumps(new_token_dict))
+
+        self.access_token = new_token_dict['access_token']
+        self.access_token_updated_at = datetime.utcnow()
+
+
+coursera_scetl = CourseraScetl(configs['coursera'], db_engine)
+coursera_scetl.check_token_freshness()
+coursera_scetl.get_access_token()
+
+
