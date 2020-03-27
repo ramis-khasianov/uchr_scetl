@@ -1,22 +1,38 @@
 import os
 import json
-import requests
 import logging
-import pandas as pd
-from datetime import datetime
-from sqlalchemy import create_engine, MetaData, Table, Column, Integer, DateTime, String, Float
-from scetl import EdusonScetl, sql_data_types, pd_data_types
+from flask import Flask, render_template, redirect
+from sqlalchemy import create_engine
+from scetl import EdusonScetl, CourseraScetl
 
-# Scetl stands for Sokols' Costyl ETL
-
-with open('configs/configs.json') as json_file:
-    configs = json.load(json_file)
 
 # engine = create_engine('mssql+pymssql://scetl:SemperInvicta90@localhost:1433/uchr')#
 db_engine = create_engine(f'sqlite:///{os.getcwd()}/db.sqlite')
 logging.basicConfig(level=logging.INFO)
 
+app = Flask(__name__)
 
-eduson_scetl = EdusonScetl(configs['eduson'], db_engine)
-eduson_scetl.update_coursera()
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+
+@app.route('/update_scetls')
+def update_scetls():
+    with open('configs/configs.json') as json_file:
+        configs = json.load(json_file)
+
+    eduson = EdusonScetl(configs['eduson'], engine=db_engine)
+    coursera = CourseraScetl(configs['coursera'], engine=db_engine)
+
+    for hr_system in [eduson, coursera]:
+        hr_system.update_scetl()
+    return redirect('index')
+
+
+if __name__ == '__main__':
+    app.run()
+
+
 
