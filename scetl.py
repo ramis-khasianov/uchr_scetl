@@ -4,7 +4,7 @@ import requests
 import logging
 import pandas as pd
 from datetime import datetime
-from sqlalchemy import create_engine, MetaData, Table, Column, Integer, DateTime, String, Float
+from sqlalchemy import create_engine, MetaData, Table, Column, Integer, DateTime, String, Float, Text
 
 # -----------------------------------
 # Scetl stands for Sokols' Costyl ETL
@@ -19,16 +19,18 @@ class Scetl:
         'VARCHAR': String,
         'NUMERIC': Float,
         'DATETIME': DateTime,
-        'UNIXTIME': DateTime
+        'UNIXTIME': DateTime,
+        'TEXT': Text
     }
 
     # Data type to convert pandas data frames
     pd_data_types = {
         'INT': 'int',
-        'VARCHAR': 'object',
+        'VARCHAR': 'str',
         'NUMERIC': 'float',
         'DATETIME': 'datetime',
-        'UNIXTIME': 'unixtime'
+        'UNIXTIME': 'unixtime',
+        'TEXT': 'str'
     }
 
     def __init__(self, config, engine):
@@ -406,17 +408,234 @@ class CourseraScetl(Scetl):
         self.update_user_changes()
 
 
-'''
+# -----------------
+# ---AssessFirst---
+# -----------------
+
+
+class AssessFirstScetl(Scetl):
+
+    def get_current_candidates_statuses(self):
+        with self.engine.connect() as connection:
+            query = '''
+                SELECT uuid, COUNT(*) AS finished_assessments 
+                FROM (SELECT DISTINCT uuid, name, status FROM assess_first_assessments)
+                WHERE status = 'finish' GROUP BY uuid        
+            '''
+            current_candidates_statuses = {x[0]: x[1] for x in connection.execute(query).fetchall()}
+        return current_candidates_statuses
+
+    def get_candidates_json(self, user, page=None):
+        token = self.config['users'][user]['token']
+        header_name = self.config['request_headers']['header_name']
+        url = self.urls['candidates_list']['url']
+        params = self.urls['candidates_list']['params']
+        if page is not None:
+            params['page'] = page
+        logging.info(f'Updating candidate page {page}: calling {url} with params {params}')
+        response = requests.get(url, headers={header_name: token}, params=params).json()
+        return response
+
+    def get_paginated_candidates_json(self, user):
+        page = 0
+        last_page = 1
+        paged_response = {}
+        while page != int(last_page):
+
+            page += 1
+            candidates_json = self.get_candidates_json(user, page)
+            paged_response[f'page_{page}'] = candidates_json
+            last_page = candidates_json['meta']['last_page']
+
+        concat_response = [item for x in paged_response.keys() for item in paged_response[x]['data']]
+        return concat_response
+
+    def get_results_json(self, user, uuid):
+        token = self.config['users'][user]['token']
+        header_name = self.config['request_headers']['header_name']
+        url = self.urls['candidate_results']['url'].replace('{uuid}', uuid)
+        params = self.urls['candidate_results']['params']
+        response = requests.get(url, headers={header_name: token}, params=params).json()
+        return response
+
+    def get_synthesis_json(self, user, uuid, candidate_token=None):
+        if candidate_token is None:
+            candidate_token = self.get_results_json(user, uuid)['token']
+        token = self.config['users'][user]['token']
+        header_name = self.config['request_headers']['header_name']
+        url = self.urls['candidate_synthesis']['url'].replace('{token}', candidate_token)
+        params = self.urls['candidate_synthesis']['params']
+        response = requests.get(url, headers={header_name: token}, params=params).json()
+        return response
+
+    @staticmethod
+    def parse_synthesis_json(synthesis_json):
+        results_list = []
+        for block in synthesis_json:
+            if synthesis_json[block] is not None:
+                for param in synthesis_json[block]:
+                    if type(synthesis_json[block][param]) is list:
+                        for list_item in synthesis_json[block][param]:
+                            record = {
+                                'block': block,
+                                'item': param,
+                                'value': list_item,
+                                'additional_value': None}
+                            results_list.append(record)
+                    elif type(synthesis_json[block][param]) is str:
+                        record = {
+                            'block': block,
+                            'item': param,
+                            'value': synthesis_json[block][param],
+                            'additional_value': None
+                        }
+                        results_list.append(record)
+                    elif param in ['bad_squares', 'good_squares']:
+                        for square in synthesis_json[block][param].keys():
+                            record = {
+                                'block': block,
+                                'item': param,
+                                'value': synthesis_json[block][param][square]['label'],
+                                'additional_value': square
+                            }
+                            results_list.append(record)
+                    elif param in ['privileged', 'decision', 'learning']:
+                        record = {
+                            'block': block,
+                            'item': param,
+                            'value': synthesis_json[block][param]['value'],
+                            'additional_value': synthesis_json[block][param]['description']
+                        }
+                        results_list.append(record)
+                    else:
+                        record = {'block': block, 'item': param, 'value': None, 'additional_value': None}
+                        results_list.append(record)
+
+        return results_list
+
+    def update_candidate_result(self, user, uuid, results_json=None):
+        if results_json is None:
+            results_json = self.get_results_json(user, uuid)
+        logging.info(f'Updating results for user {user}, candidate {uuid}')
+        with self.engine.connect() as connection:
+            query = f"DELETE FROM assess_first_assessments WHERE uuid = '{uuid}'"
+            connection.execute(query)
+
+        table_name, table_cols = self.get_table_params('assessments')
+        df_assessments = pd.DataFrame(results_json['assessments'])
+        df_assessments['last_update'] = datetime.utcnow()
+        df_assessments['uuid'] = uuid
+        df_assessments = self.apply_data_types('assessments', df_assessments[table_cols])
+        df_assessments.to_sql(table_name, con=self.engine, if_exists='append', index=False)
+
+        if 'finish' in list(df_assessments['status']):
+            with self.engine.connect() as connection:
+                query = f"DELETE FROM assess_first_results WHERE uuid = '{uuid}'"
+                connection.execute(query)
+            table_name, table_cols = self.get_table_params('results')
+            df_results = pd.DataFrame(results_json['results'])
+            df_results['last_update'] = datetime.utcnow()
+            df_results['uuid'] = uuid
+            df_results = self.apply_data_types('results', df_results[table_cols])
+            df_results.to_sql(table_name, con=self.engine, if_exists='append', index=False)
+
+    def update_candidate_synthesis(self, user, uuid, results_json=None):
+        if results_json is None:
+            candidate_token = None
+        else:
+            candidate_token = results_json['token']
+        logging.info(f'Updating synthesis for user {user}, candidate {uuid}')
+        synthesis_json = self.get_synthesis_json(user, uuid, candidate_token)
+        results_list = self.parse_synthesis_json(synthesis_json)
+
+        with self.engine.connect() as connection:
+            query = f"DELETE FROM assess_first_synthesises WHERE uuid = '{uuid}'"
+            connection.execute(query)
+
+        table_name, table_cols = self.get_table_params('synthesises')
+        df = pd.DataFrame(results_list)
+        df['last_update'] = datetime.utcnow()
+        df['uuid'] = uuid
+        df = self.apply_data_types('synthesises', df[table_cols])
+        df.to_sql(table_name, con=self.engine, if_exists='append', index=False)
+
+    def update_candidates(self, users=None):
+        self.check_tables()
+        if users is None:
+            users = self.config['users']  # todo delete this
+        df_all_candidates = pd.DataFrame()
+        for user in users:
+            current_candidates_statuses = self.get_current_candidates_statuses()
+            finished_candidates = [
+                x for x in current_candidates_statuses.keys() if current_candidates_statuses[x] >= 3
+            ]
+            logging.info(f'updating candidates for {user}')
+            candidates = self.get_paginated_candidates_json(user)
+
+            table_name, table_cols = self.get_table_params('candidates')
+            with self.engine.connect() as connection:
+                query = f"DELETE FROM assess_first_candidates WHERE owner = '{user}'"
+                connection.execute(query)
+            df_candidates = pd.DataFrame(candidates)
+            df_candidates['last_update'] = datetime.utcnow()
+            df_candidates['owner'] = user
+            df_candidates = self.apply_data_types('candidates', df_candidates[table_cols])
+            df_candidates.to_sql(table_name, con=self.engine, if_exists='append', index=False)
+
+            not_finished_candidates = [x for x in df_candidates['uuid'] if x not in finished_candidates]
+            logging.info(f'Found {len(not_finished_candidates)} not finished candidates. '
+                         f'Total candidates: {df_candidates.shape[0]}')
+            current_candidate = 0
+
+            for uuid in not_finished_candidates:
+                current_candidate += 1
+                logging.info(f'Updating candidate {current_candidate} out of {len(not_finished_candidates)}')
+                results_json = self.get_results_json(user, uuid)
+                finished_assessments = len(
+                    [x['name'] for x in results_json['assessments'] if x['status'] == 'finish']
+                )
+                try:
+                    current_known_assessments = current_candidates_statuses[uuid]
+                except KeyError:
+                    current_known_assessments = 0
+                logging.info(f'Updating user {user}, candidate {uuid}. '
+                             f'Known assessments: {current_known_assessments}. '
+                             f'Discovered assessments: {finished_assessments}')
+                if finished_assessments > current_known_assessments:
+                    self.update_candidate_result(user, uuid, results_json)
+                    self.update_candidate_synthesis(user, uuid, results_json)
+
+    def update_scetl(self):
+        self.update_candidates()
+
+
+# -------------
+# ---Skillaz---
+# -------------
+
+class SkillazScetl(Scetl):
+    pass
+
+
+
+
 with open('configs/configs.json') as json_file:
     configs = json.load(json_file)
 
 # engine = create_engine('mssql+pymssql://scetl:SemperInvicta90@localhost:1433/uchr')#
-db_engine = create_engine(f'sqlite:///{os.getcwd()}/db3.sqlite')
+db_engine = create_engine(f'sqlite:///{os.getcwd()}/db7.sqlite')
 logging.basicConfig(level=logging.INFO)
 
+assess_first_scetl = AssessFirstScetl(configs['assess_first'], db_engine)
+assess_first_scetl.update_scetl()
 
-coursera_scetl = CourseraScetl(configs['coursera'], db_engine)
-coursera_scetl.update_scetl()
-eduson_scetl = EdusonScetl(configs['eduson'], db_engine)
-eduson_scetl.update_scetl()
+
+
+
+'''
+uuid = "6d7f7df14bee408d9fe47526919c8a63"
+assess_first_scetl.update_candidate_synthesis('yulia.lagbuzhap@uralchem.com', uuid)
+sj = assess_first_scetl.get_synthesis_json('yulia.lagbuzhap@uralchem.com', uuid)
+df = pd.DataFrame(assess_first_scetl.parse_synthesis_json(sj))
+df.info()
 '''
