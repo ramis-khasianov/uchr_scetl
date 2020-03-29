@@ -177,7 +177,6 @@ class EdusonScetl(Scetl):
         """
         table_name, table_cols = self.get_table_params('user_changes')
 
-        self.check_tables()
         last_update_ts = self.get_last_update_ts(table_name)
 
         # utilizing single json for updating user table and populating user changes table
@@ -202,9 +201,10 @@ class EdusonScetl(Scetl):
 
     def update_scetl(self):
         """
-        Start data update routines
+        Check if tables exist and start data update routines
         :return: None, calls functions that write results to db
         """
+        self.check_tables()
         self.update_user_changes()
 
 # ------------
@@ -371,7 +371,7 @@ class CourseraScetl(Scetl):
         """
         table_name, table_cols = self.get_table_params('enrolments_changes')
         logging.info(f'Updating {table_name}')
-        self.check_tables()
+
         last_update_ts = self.get_last_update_ts(table_name)
 
         # get list of existing content
@@ -402,9 +402,10 @@ class CourseraScetl(Scetl):
 
     def update_scetl(self):
         """
-        Start data update routines
+        Check if tables exist and start data update routines
         :return: None, calls functions that write results to db
         """
+        self.check_tables()
         self.update_user_changes()
 
 
@@ -415,7 +416,15 @@ class CourseraScetl(Scetl):
 
 class AssessFirstScetl(Scetl):
 
+    # all candidates in assess first are accessible only for specific user.
+    # each user has his own token and his candidates are only accessible with his token
+    # so all methods have user as parameter, so that api call can get api token for this user
+
     def get_current_candidates_statuses(self):
+        """
+        Get finished assessments per candidate. So we won't call results for finished candidates
+        :return: python dict where key is uuid and value is number of finished assessments
+        """
         with self.engine.connect() as connection:
             query = '''
                 SELECT uuid, COUNT(*) AS finished_assessments 
@@ -426,6 +435,12 @@ class AssessFirstScetl(Scetl):
         return current_candidates_statuses
 
     def get_candidates_json(self, user, page=None):
+        """
+        Get list of candidates accessible for this user
+        :param user: user to get his token for request headers
+        :param page: page as param for api call (max 50 candidates per api call)
+        :return: python dict - result of the call
+        """
         token = self.config['users'][user]['token']
         header_name = self.config['request_headers']['header_name']
         url = self.urls['candidates_list']['url']
@@ -437,6 +452,11 @@ class AssessFirstScetl(Scetl):
         return response
 
     def get_paginated_candidates_json(self, user):
+        """
+        Get results of get_candidates_json call as paginated dict
+        :param user: user to get his token for request headers
+        :return: python dict with pages as keys and results of get_candidates_json as values
+        """
         page = 0
         last_page = 1
         paged_response = {}
@@ -451,6 +471,12 @@ class AssessFirstScetl(Scetl):
         return concat_response
 
     def get_results_json(self, user, uuid):
+        """
+        Get results of candidate/results call as python dict
+        :param user: user to get his token for request headers
+        :param uuid: candidate uuid - need as path variable to api call
+        :return: python dict - result of the call
+        """
         token = self.config['users'][user]['token']
         header_name = self.config['request_headers']['header_name']
         url = self.urls['candidate_results']['url'].replace('{uuid}', uuid)
@@ -459,6 +485,13 @@ class AssessFirstScetl(Scetl):
         return response
 
     def get_synthesis_json(self, user, uuid, candidate_token=None):
+        """
+        Get results of candidate/synthesis call as python dict
+        :param user: user to get his token for request headers
+        :param uuid: candidate uuid - needed to get token from get_results_json if no candidate token provided
+        :param candidate_token: candidate token (gotten from results call) - need as path variable to api call
+        :return: python dict - result of the call
+        """
         if candidate_token is None:
             candidate_token = self.get_results_json(user, uuid)['token']
         token = self.config['users'][user]['token']
@@ -470,6 +503,12 @@ class AssessFirstScetl(Scetl):
 
     @staticmethod
     def parse_synthesis_json(synthesis_json):
+        """
+        Synthesis call results are quite a unstructured mess.
+        This static methods parses results to a more agreable format
+        :param synthesis_json: results of get_synthesis_json
+        :return: list of records from synthesis call
+        """
         results_list = []
         for block in synthesis_json:
             if synthesis_json[block] is not None:
@@ -514,6 +553,13 @@ class AssessFirstScetl(Scetl):
         return results_list
 
     def update_candidate_result(self, user, uuid, results_json=None):
+        """
+        Updates candidate's results in database if there are any changes in finished assessments
+        :param user: user to get his token for request headers
+        :param uuid: candidate uuid - need as path variable to api call
+        :param results_json: results of get_results_json so that call is not made second time
+        :return: None, writes results to db
+        """
         if results_json is None:
             results_json = self.get_results_json(user, uuid)
         logging.info(f'Updating results for user {user}, candidate {uuid}')
@@ -540,6 +586,13 @@ class AssessFirstScetl(Scetl):
             df_results.to_sql(table_name, con=self.engine, if_exists='append', index=False)
 
     def update_candidate_synthesis(self, user, uuid, results_json=None):
+        """
+        Updates candidate's synthesis in database if there are any changes in finished assessments
+        :param user: user to get his token for request headers
+        :param uuid: candidate uuid - need as path variable to api call
+        :param results_json: results of get_results_json so that call is not made second time
+        :return: None, writes results to db
+        """
         if results_json is None:
             candidate_token = None
         else:
@@ -559,11 +612,15 @@ class AssessFirstScetl(Scetl):
         df = self.apply_data_types('synthesises', df[table_cols])
         df.to_sql(table_name, con=self.engine, if_exists='append', index=False)
 
-    def update_candidates(self, users=None):
-        self.check_tables()
-        if users is None:
-            users = self.config['users']  # todo delete this
-        df_all_candidates = pd.DataFrame()
+    def update_candidates(self):
+        """
+        Main method. Gets list of candidates from db with finished assessments.
+        Then goes to cycle through all users, for each of them get list of candidates and if they have below
+        3 finished assessments - makes results call. If candidate has new finished assessments -
+        it makes result and synthesis calls, updating data in db
+        :return: None, writes results to db
+        """
+        users = self.config['users']
         for user in users:
             current_candidates_statuses = self.get_current_candidates_statuses()
             finished_candidates = [
@@ -606,6 +663,11 @@ class AssessFirstScetl(Scetl):
                     self.update_candidate_synthesis(user, uuid, results_json)
 
     def update_scetl(self):
+        """
+        Check if tables exist and start data update routines
+        :return: None, calls functions that write results to db
+        """
+        self.check_tables()
         self.update_candidates()
 
 
@@ -614,28 +676,115 @@ class AssessFirstScetl(Scetl):
 # -------------
 
 class SkillazScetl(Scetl):
-    pass
 
+    # Skillaz is bound to be updated as system is not finished as of 29.03.2020
 
+    def get_skillaz_json(self, url):
+        """
+        Make api call and return results as python dict
+        :param url: api endpoint to call
+        :return: results of api call as python dict
+        """
+        headers = {
+            self.config['request_headers']['header_name']: self.config['request_headers']['header_value']
+        }
+        url = self.urls[url]['url']
+        response = requests.get(url, headers=headers).json()
+        return response
 
+    @staticmethod
+    def parse_skillaz_response(response_json, json_type):
+        """
+        Parses data from candidates, requests, offers api calls to cleaner format
+        :param response_json: python dict, result from get_skillaz_json call for corresponding url
+        :param json_type: name of the call (candidates, requests or offers)
+        :return: python list of records for a call
+        """
+        main_data = []
+        workflow_data = []
+        for item in response_json['Items']:
+            main_data_row = item['Data']
+            workflow = item['Workflow']['States']
+            for wf in workflow:
+                wf['Schema'] = item['Workflow']['Schema']
+                wf['Id'] = item['Id']
+                if json_type == 'candidates':
+                    wf['VacancyId'] = item['VacancyId']
+                    wf['RequestId'] = item['RequestId']
+                if json_type == 'requests':
+                    wf['VacancyId'] = item['VacancyId']
+                if json_type == 'offers':
+                    wf['CandidateId'] = item['CandidateId']
+            workflow_data = workflow_data + workflow
+            main_data_row['Id'] = item['Id']
+            if json_type == 'candidates':
+                main_data_row['RequestId'] = item['RequestId']
+            if json_type == 'request':
+                main_data_row['Name'] = item['Name']
+            if json_type == 'offer':
+                main_data_row['CandidateId'] = item['CandidateId']
+            for i in item['Audit']:
+                main_data_row[i] = item['Audit'][i]
+            main_data.append(main_data_row)
+        return main_data, workflow_data
 
-with open('configs/configs.json') as json_file:
-    configs = json.load(json_file)
+    @staticmethod
+    def parse_vacancies(vacancies_json):
+        """
+        Parses data from vacancies api call to cleaner format
+        :param vacancies_json: python dict, result from get_skillaz_json call for vacancies url
+        :return: python list of vacancies records
+        """
+        vacancies = []
+        for item in vacancies_json['Items']:
+            vacancy_data = item['Data']
+            vacancy_data['Id'] = item['Id']
+            vacancy_data['Name'] = item['Name']
+            vacancy_data['IsActive'] = item['IsActive']
+            for i in item['Audit']:
+                vacancy_data[i] = item['Audit'][i]
+            vacancies.append(vacancy_data)
+        return vacancies
 
-# engine = create_engine('mssql+pymssql://scetl:SemperInvicta90@localhost:1433/uchr')#
-db_engine = create_engine(f'sqlite:///{os.getcwd()}/db7.sqlite')
-logging.basicConfig(level=logging.INFO)
+    def update_vacancies(self):
+        """
+        Makes vacancies api call and saves data to db
+        :return: None, writes results to db
+        """
+        logging.info(f'Updating table vacancies')
+        vacancies_json = self.get_skillaz_json('vacancies')
+        df = pd.DataFrame(self.parse_vacancies(vacancies_json))
+        df['last_update'] = datetime.utcnow()
+        table_name, table_cols = self.get_table_params('vacancies')
+        df = self.apply_data_types('vacancies', df[table_cols])
+        df.to_sql(table_name, con=self.engine, if_exists='replace', index=False)
 
-assess_first_scetl = AssessFirstScetl(configs['assess_first'], db_engine)
-assess_first_scetl.update_scetl()
+    def update_skillaz(self):
+        """
+        Cycle through three api calls from skillaz and save current data from them in six table:
+        for each call there is a data table and workflow table
+        :return: None, writes results to db
+        """
+        for json_type in ['candidates', 'offers', 'requests']:
+            response = self.get_skillaz_json(json_type)
+            data_json, workflow_json = self.parse_skillaz_response(response, json_type)
+            jsons_dict = {
+                json_type: data_json,
+                json_type + '_workflow': workflow_json
+            }
+            for table in jsons_dict:
+                logging.info(f'Updating table {table}')
+                df = pd.DataFrame(jsons_dict[table])
+                df['last_update'] = datetime.utcnow()
+                table_name, table_cols = self.get_table_params(table)
+                df = self.apply_data_types(table, df[table_cols])
+                df.to_sql(table_name, con=self.engine, if_exists='replace', index=False)
 
-
-
-
-'''
-uuid = "6d7f7df14bee408d9fe47526919c8a63"
-assess_first_scetl.update_candidate_synthesis('yulia.lagbuzhap@uralchem.com', uuid)
-sj = assess_first_scetl.get_synthesis_json('yulia.lagbuzhap@uralchem.com', uuid)
-df = pd.DataFrame(assess_first_scetl.parse_synthesis_json(sj))
-df.info()
-'''
+    def update_scetl(self):
+        """
+        Check if tables exist and start data update routines
+        :return: None, calls functions that write results to db
+        """
+        self.check_tables()
+        self.update_vacancies()
+        self.update_skillaz()
