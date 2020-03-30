@@ -3,6 +3,7 @@ import json
 import logging
 import schedule
 import time
+import pandas as pd
 from sqlalchemy import create_engine
 from scetl import EdusonScetl, CourseraScetl, AssessFirstScetl, SkillazScetl
 
@@ -27,12 +28,26 @@ def start_updates():
     assess_first_scetl.update_scetl()
 
 
-start_updates()
+def make_csv_files():
+    logging.info('Starting csv generator')
+    with open('configs/configs.json') as json_file:
+        configs = json.load(json_file)
 
-'''
+    if not os.path.exists('csv_files/'):
+        os.mkdir('csv_files/')
+
+    for hr_system in configs:
+        for table in configs[hr_system]['tables']:
+            table_name = configs[hr_system]['tables'][table]['table_name']
+            logging.info(f'Coping table {table_name} to csv')
+            df = pd.read_sql_table(table_name, con=db_engine)
+            df.to_csv('csv_files/' + table_name + '.csv', index=False)
+
+
 schedule.every().day.at("21:45").do(start_updates)
+schedule.every().day.at("22:00").do(make_csv_files)
 
 while True:
     schedule.run_pending()
     time.sleep(1)
-'''
+

@@ -128,3 +128,6 @@ configs/coursera_token.json
 
 # db
 db.sqlite
+
+# temporary csv folder
+csv_files/
