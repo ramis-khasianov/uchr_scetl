@@ -207,6 +207,7 @@ class EdusonScetl(Scetl):
         self.check_tables()
         self.update_user_changes()
 
+
 # ------------
 # --Coursera--
 # ------------
@@ -314,6 +315,44 @@ class CourseraScetl(Scetl):
         """
         return self.get_paged_json(self.urls['contents']['url'])
 
+    def get_memberships_json(self):
+        """
+        Calls get_paged_json function for memberships url
+        :return: list, result of get_paged_json
+        """
+        return self.get_paged_json(self.urls['memberships']['url'])
+
+    def get_invitations_json(self):
+        """
+        Calls get_paged_json function for invitations url
+        :return: list, result of get_paged_json
+        """
+        return self.get_paged_json(self.urls['invitations']['url'])
+
+    def update_invitations(self):
+        """
+        Clean and save results of get_invitations_json to database
+        :return: None, writes results to db
+        """
+        table_name, table_cols = self.get_table_params('invitations')
+        invitations_json = self.get_invitations_json()
+        df = pd.DataFrame(invitations_json)
+        df['last_update'] = datetime.utcnow()
+        df = self.apply_data_types('invitations', df[table_cols])
+        df.to_sql(table_name, con=self.engine, if_exists='replace', index=False)
+
+    def update_memberships(self):
+        """
+        Clean and save results of get_memberships_json to database
+        :return: None, writes results to db
+        """
+        table_name, table_cols = self.get_table_params('memberships')
+        memberships_json = self.get_memberships_json()
+        df = pd.DataFrame(memberships_json)
+        df['last_update'] = datetime.utcnow()
+        df = self.apply_data_types('memberships', df[table_cols])
+        df.to_sql(table_name, con=self.engine, if_exists='replace', index=False)
+
     def update_enrolments(self, enrolments_json=None):
         """
         Clean and save results of get_enrolments_json to database
@@ -406,6 +445,8 @@ class CourseraScetl(Scetl):
         :return: None, calls functions that write results to db
         """
         self.check_tables()
+        self.update_memberships()
+        self.update_invitations()
         self.update_user_changes()
 
 
@@ -674,6 +715,7 @@ class AssessFirstScetl(Scetl):
 # -------------
 # ---Skillaz---
 # -------------
+
 
 class SkillazScetl(Scetl):
 
