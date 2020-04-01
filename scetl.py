@@ -147,6 +147,23 @@ class EdusonScetl(Scetl):
         df_initial_users = self.apply_data_types('users', df_initial_users)
         df_initial_users.to_sql(table_name, con=self.engine, if_exists='replace', index=False)
 
+    def update_user_courses_changes(self, user_id, user_courses_json=None):
+        """
+        Adds record of course's current progress if user user had any activity since last update
+        :param user_id: user id for Eduson
+        :param user_courses_json: results from get_user_courses_json call
+        :return: None, writes results to db
+        """
+        table_name, table_cols = self.get_table_params('user_courses_changes')
+        if user_courses_json is None:
+            user_courses_json = self.get_user_courses_json(user_id)
+        df = pd.DataFrame(user_courses_json['courses'])
+        df['last_update'] = datetime.utcnow()
+        df['user_id'] = user_id
+        df = df[table_cols]
+        df = self.apply_data_types('user_courses_changes', df)
+        df.to_sql(table_name, con=self.engine, if_exists='append', index=False)
+
     def update_user_courses(self, user_id):
         """
         Updating user courses data if user had any activity since last update
@@ -168,6 +185,7 @@ class EdusonScetl(Scetl):
                 query = f'DELETE FROM eduson_user_courses WHERE user_id = {user_id}'
                 connection.execute(query)
             df_user_courses.to_sql(table_name, con=self.engine, if_exists='append', index=False)
+            self.update_user_courses_changes(user_id, response)
 
     def update_user_changes(self):
         """
