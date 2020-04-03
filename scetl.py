@@ -43,6 +43,22 @@ class Scetl:
         self.config = config
         self.engine = engine
 
+    def add_missing_columns(self, table, df):
+        """
+        Adds empty columns to pd.DataFrame in case api structure changes (Currently (03.04.20) the case for skillaz)
+        :param table: table dict from config dict (not table_name)
+        :param df: DataFrame to process, usually df made from api call json
+        :return: same df with proper data types
+        """
+        cols = self.config['tables'][table]['columns']
+        cols_list = [x['name'] for x in cols]
+        absent_columns = [x for x in cols_list if x not in df.columns]
+        if absent_columns:
+            logging.info(f'Not found columns in {table} response: {absent_columns}')
+            for col in absent_columns:
+                df[col] = None
+        return df
+
     def apply_data_types(self, table, df):
         """
         Transforms pd.DataFrame data types in accordance with schema provided in config-tables
@@ -52,6 +68,7 @@ class Scetl:
         """
         cols = self.config['tables'][table]['columns']
         col_dict = {x['name']: self.pd_data_types[x['type']] for x in cols}
+        df = df.copy()
         for col in df.columns:
             if col_dict[col] == 'datetime':
                 df[col] = pd.to_datetime(df[col], yearfirst=True)
@@ -816,6 +833,10 @@ class SkillazScetl(Scetl):
         df = pd.DataFrame(self.parse_vacancies(vacancies_json))
         df['last_update'] = datetime.utcnow()
         table_name, table_cols = self.get_table_params('vacancies')
+        new_columns = [x for x in df.columns if x not in table_cols]
+        if new_columns:
+            logging.info(f'New columns in vacancies response: {new_columns}')
+        df = self.add_missing_columns('vacancies', df)
         df = self.apply_data_types('vacancies', df[table_cols])
         df.to_sql(table_name, con=self.engine, if_exists='replace', index=False)
 
@@ -837,6 +858,10 @@ class SkillazScetl(Scetl):
                 df = pd.DataFrame(jsons_dict[table])
                 df['last_update'] = datetime.utcnow()
                 table_name, table_cols = self.get_table_params(table)
+                new_columns = [x for x in df.columns if x not in table_cols]
+                if new_columns:
+                    logging.info(f'New columns in {table} response: {new_columns}')
+                df = self.add_missing_columns(table, df)
                 df = self.apply_data_types(table, df[table_cols])
                 df.to_sql(table_name, con=self.engine, if_exists='replace', index=False)
 
