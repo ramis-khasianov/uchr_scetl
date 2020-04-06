@@ -19,7 +19,8 @@ class Scetl:
         'VARCHAR': String,
         'NUMERIC': Float,
         'DATETIME': DateTime,
-        'UNIXTIME': DateTime,
+        'UNIXTIME_MS': DateTime,
+        'UNIXTIME_S': DateTime,
         'TEXT': Text
     }
 
@@ -29,7 +30,8 @@ class Scetl:
         'VARCHAR': 'str',
         'NUMERIC': 'float',
         'DATETIME': 'datetime',
-        'UNIXTIME': 'unixtime',
+        'UNIXTIME_MS': 'unixtime_ms',
+        'UNIXTIME_S': 'unixtime_s',
         'TEXT': 'str'
     }
 
@@ -73,8 +75,10 @@ class Scetl:
             if col_dict[col] == 'datetime':
                 df[col] = pd.to_datetime(df[col], yearfirst=True)
                 df[col] = df[col].dt.tz_localize(None)
-            elif col_dict[col] == 'unixtime':
+            elif col_dict[col] == 'unixtime_ms':
                 df[col] = pd.to_datetime(df[col], unit='ms')
+            elif col_dict[col] == 'unixtime_s':
+                df[col] = pd.to_datetime(df[col], unit='s')
             else:
                 df[col] = df[col].astype(col_dict[col])
         return df

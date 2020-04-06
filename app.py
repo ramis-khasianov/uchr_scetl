@@ -110,9 +110,9 @@ schedule.every().day.at("21:45").do(start_updates)
 schedule.every().day.at("22:00").do(make_csv_files)
 schedule.every().day.at("22:10").do(copy_to_sql_server)
 
+check_if_update_on_start()
+
 while True:
-    if check_if_update_on_start():
-        break
     schedule.run_pending()
     time.sleep(1)
 
