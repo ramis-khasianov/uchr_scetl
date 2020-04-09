@@ -6,6 +6,7 @@ import time
 import pandas as pd
 from sqlalchemy import create_engine
 from scetl import EdusonScetl, CourseraScetl, AssessFirstScetl, SkillazScetl
+from mapper import EmployeeMapper
 
 ms_db_engine = create_engine('mssql+pymssql://scetl:SemperInvicta90@localhost:1433/uchr')
 db_engine = create_engine(f'sqlite:///{os.getcwd()}/db.sqlite')
@@ -70,6 +71,25 @@ def copy_to_sql_server():
     logging.info(f'Done with copying')
 
 
+def map_users():
+    """
+    Start user_mapping routine
+    :return: None, writes to database
+    """
+    em = EmployeeMapper(db_engine)
+    logging.info('Mapping users...')
+    em.map_users()
+
+
+def load_manual_mapping():
+    """
+    Load manual excel with manual mapping to excel
+    :return: None, writes to db
+    """
+    em = EmployeeMapper(db_engine)
+    em.update_manual_from_excel()
+
+
 def check_if_update_on_start():
     """
     While testing starting specific routines required - helper function
@@ -100,18 +120,26 @@ def check_if_update_on_start():
         if_write_mssql = input('Copy data to sql? (y/n): ')
         if if_write_mssql[0].lower() == 'y':
             copy_to_sql_server()
+        if_map_users = input('Map users to employees? (y/n): ')
+        if if_map_users[0].lower() == 'y':
+            map_users()
+        if_map_users_manual = input('Upload manual user-employee mapping? (y/n): ')
+        if if_map_users_manual[0].lower() == 'y':
+            load_manual_mapping()
         return True
     else:
         return False
 
 
 # Jobs scheduled
-schedule.every().day.at("21:45").do(start_updates)
-schedule.every().day.at("22:00").do(make_csv_files)
-schedule.every().day.at("22:10").do(copy_to_sql_server)
+schedule.every().day.at("22:45").do(start_updates)
+schedule.every().day.at("23:00").do(make_csv_files)
+schedule.every().day.at("23:10").do(copy_to_sql_server)
+schedule.every().day.at("23:55").do(map_users)
 
 check_if_update_on_start()
 
+logging.info(f'Waiting to for scheduled tasks...')
 while True:
     schedule.run_pending()
     time.sleep(1)
